@@ -1,0 +1,129 @@
+-- Drop old objects if exist
+-- Drop table SCDType6.Customer_Dim;
+-- Drop table SCDType6.Customer_Stg;
+-- Drop schema SCDType6;
+
+-- Create Schema
+CREATE SCHEMA SCDType6;
+
+-- ======================================================
+--   STEP 1: Create Target Dimension Table (Customer_Dim)
+-- ======================================================
+-- Includes:
+--  - Surrogate key (Customer_Key) for DW
+--  - Business key (CustomerID)
+--  - Current attributes (Name, City)
+--  - Prev_City (Type 3 feature)
+--  - Start_Date, End_Date, Active_Flag (Type 2 feature)
+
+CREATE TABLE SCDType6.Customer_Dim (
+    Customer_Key INT IDENTITY(1,1) PRIMARY KEY, -- Surrogate Key
+    CustomerID INT NOT NULL,                    -- Business Key
+    CustomerName VARCHAR(100),
+    Gender CHAR(1),
+    City VARCHAR(100),                          -- Current City (Type 1 effect)
+    Prev_City VARCHAR(100),                     -- Previous City (Type 3 effect)
+    Start_Date DATE,
+    End_Date DATE,
+    Active_Flag CHAR(1)                         -- Y = Active, N = Inactive
+);
+
+-- Insert Initial Records into Target Dimension
+INSERT INTO SCDType6.Customer_Dim
+    (CustomerID, CustomerName, Gender, City, Prev_City, Start_Date, End_Date, Active_Flag)
+VALUES
+    (1, 'Ravi Kumar', 'M', 'Hyderabad', NULL, '2023-01-01', '9999-12-31', 'Y'),
+    (2, 'Anjali Sharma', 'F', 'Mumbai',    NULL, '2023-01-01', '9999-12-31', 'Y'),
+    (3, 'Suresh Reddy', 'M', 'Chennai',    NULL, '2023-01-01', '9999-12-31', 'Y');
+
+-- ======================================================
+--   STEP 2: Create Staging Table (Customer_Stg)
+-- ======================================================
+
+CREATE TABLE SCDType6.Customer_Stg (
+    CustomerID INT,                  
+    CustomerName VARCHAR(100),       
+    Gender CHAR(1),                  
+    City VARCHAR(100)                
+);
+
+-- Insert Incoming Records (new snapshot)
+INSERT INTO SCDType6.Customer_Stg (CustomerID, CustomerName, Gender, City)
+VALUES
+    (1, 'Ravi Kumar', 'M', 'Bangalore'),     -- City changed
+    (2, 'Anjali Sharma', 'F', 'Mumbai'),     -- No change
+    (3, 'Suresh Reddy', 'M', 'Chennai'),     -- No change
+    (4, 'Priya Singh', 'F', 'Delhi');        -- New record
+
+select * from SCDType6.Customer_Dim
+select * from SCDType6.Customer_Stg
+-- ======================================================
+--   STEP 3: Apply SCD Type 6 Logic
+-- ======================================================
+-- Hybrid = Type1 (overwrite current), Type2 (history), Type3 (previous city)
+CREATE TABLE #TempChanges
+(
+    CustomerID INT,
+    CustomerName VARCHAR(100),
+    Gender VARCHAR(20),
+    NewCity VARCHAR(100),
+    PrevCity VARCHAR(100)
+);
+
+
+MERGE SCDType6.Customer_Dim AS Target
+USING SCDType6.Customer_Stg AS Source
+ON Target.CustomerID = Source.CustomerID
+AND Target.Active_Flag = 'Y'   -- Only check active records
+
+WHEN MATCHED AND Target.City <> Source.City THEN
+    -- Step A: Close old record (Type 2 history)
+    UPDATE SET
+        Target.Active_Flag = 'N',
+        Target.End_Date = GETDATE()
+    OUTPUT
+        deleted.CustomerID,
+        deleted.CustomerName,
+        deleted.Gender,
+        Source.City AS NewCity,
+        deleted.City AS PrevCity
+    INTO #TempChanges;
+
+-- Insert new record with updated city and prev_city
+INSERT INTO SCDType6.Customer_Dim
+    (CustomerID, CustomerName, Gender, City, Prev_City, Start_Date, End_Date, Active_Flag)
+SELECT
+    t.CustomerID,
+    t.CustomerName,
+    t.Gender,
+    t.NewCity,       -- Latest City
+    t.PrevCity,      -- Previous City (Type 3)
+    GETDATE(),
+    '9999-12-31',
+    'Y'
+FROM #TempChanges t;
+
+-- Step B: Insert new customers (not in target)
+INSERT INTO SCDType6.Customer_Dim
+    (CustomerID, CustomerName, Gender, City, Prev_City, Start_Date, End_Date, Active_Flag)
+SELECT
+    s.CustomerID,
+    s.CustomerName,
+    s.Gender,
+    s.City,
+    NULL,
+    GETDATE(),
+    '9999-12-31',
+    'Y'
+FROM SCDType6.Customer_Stg s
+WHERE NOT EXISTS (
+    SELECT 1 FROM SCDType6.Customer_Dim d WHERE d.CustomerID = s.CustomerID
+);
+
+-- ======================================================
+--   STEP 4: Final Output Check
+-- ======================================================
+SELECT * FROM SCDType6.Customer_Dim ORDER BY CustomerID, Start_Date;
+SELECT * FROM SCDType6.Customer_Stg;
+
+select * from #TempChanges
