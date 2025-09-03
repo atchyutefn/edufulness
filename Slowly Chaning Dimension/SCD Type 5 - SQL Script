@@ -1,0 +1,122 @@
+-- Drop old tables if exist
+-- DROP TABLE SCDType5.Main_Customer_Dim;
+-- DROP TABLE SCDType5.Mini_Customer_Dim;
+-- DROP TABLE SCDType5.Customer_Stg;
+-- DROP SCHEMA SCDType5;
+
+-- Create Schema
+CREATE SCHEMA SCDType5;
+
+---------------------------------------------------------
+--   STEP 1: Create Target Dimension Tables
+---------------------------------------------------------
+
+-- Mini Dimension (tracks City history with SCD2 logic)
+CREATE TABLE SCDType5.Mini_Customer_Dim (
+    MiniDim_SK INT identity(1000,1) PRIMARY KEY,       -- Surrogate key for Mini dimension
+    CustomerID VARCHAR(10),           -- Business key
+    City VARCHAR(100),                -- Slowly changing attribute
+    Active_Flag CHAR(1),              -- Y = Active, N = Historical
+    Start_Date DATE,
+    End_Date DATE
+);
+
+-- Main Dimension (always points to latest MiniDim)
+CREATE TABLE SCDType5.Main_Customer_Dim (
+    Customer_SK INT PRIMARY KEY,      -- Surrogate key for main dim
+    CustomerID VARCHAR(10),           -- Business key
+    CustomerName VARCHAR(100),        -- Fixed attribute
+    MiniDim_SK INT,                   -- FK reference to MiniDim
+    CONSTRAINT fk_mini FOREIGN KEY (MiniDim_SK) REFERENCES SCDType5.Mini_Customer_Dim(MiniDim_SK)
+);
+
+---------------------------------------------------------
+--   STEP 2: Insert Initial Records into Target Dimension
+---------------------------------------------------------
+
+-- Insert into Mini Dimension (initial cities)
+INSERT INTO SCDType5.Mini_Customer_Dim
+VALUES
+    ( 'C001', 'Bangalore', 'Y', '2023-01-01', NULL),
+    ( 'C002', 'Mumbai',    'Y', '2023-01-01', NULL);
+
+-- Insert into Main Dimension (current pointer to MiniDim)
+INSERT INTO SCDType5.Main_Customer_Dim
+VALUES
+    (101, 'C001', 'Ramesh Kumar', 1000),
+    (102, 'C002', 'Priya Sharma', 1001);
+
+select * from SCDType5.Main_Customer_Dim
+select * from SCDType5.Mini_Customer_Dim
+select * from SCDType5.customer_stg
+---------------------------------------------------------
+--   STEP 3: Create Staging Table
+---------------------------------------------------------
+
+CREATE TABLE SCDType5.Customer_Stg (
+    CustomerID VARCHAR(10),           -- Business key
+    CustomerName VARCHAR(100),        -- Updated Name
+    City VARCHAR(100)                 -- Updated City
+);
+
+-- Insert Incoming Records (simulate changes)
+INSERT INTO SCDType5.Customer_Stg
+VALUES
+    ('C001', 'Ramesh Kumar', 'Hyderabad'),  -- City changed
+    ('C002', 'Priya Sharma', 'Mumbai');     -- No change
+
+---------------------------------------------------------
+--   STEP 4: Apply SCD Type 5 Logic
+--   - Maintain history in MiniDim (SCD2 style)
+--   - MainDim points to latest MiniDim record
+---------------------------------------------------------
+
+-- Step 4.1: Close old MiniDim record if city changed
+UPDATE mini
+SET End_Date = GETDATE(), 
+	Active_Flag = 'N'
+FROM SCDType5.Mini_Customer_Dim mini
+JOIN SCDType5.Customer_Stg stg
+  ON mini.CustomerID = stg.CustomerID
+WHERE mini.Active_Flag = 'Y'
+  AND mini.City <> stg.City;
+
+-- Step 4.2: Insert new MiniDim record for changed City
+INSERT INTO SCDType5.Mini_Customer_Dim 
+		( CustomerID, City, Active_Flag, Start_Date, End_Date)
+SELECT 
+    stg.CustomerID,
+    stg.City,
+    'Y',
+    GETDATE(),
+    NULL
+FROM SCDType5.Customer_Stg stg
+LEFT JOIN SCDType5.Mini_Customer_Dim mini
+    ON stg.CustomerID = mini.CustomerID
+WHERE mini.City <> stg.City;
+
+-- Step 4.3: Update Main Dimension to point to latest MiniDim record
+UPDATE main
+SET MiniDim_SK = mini.MiniDim_SK
+FROM SCDType5.Main_Customer_Dim main
+JOIN SCDType5.Customer_Stg stg
+    ON main.CustomerID = stg.CustomerID
+JOIN SCDType5.Mini_Customer_Dim mini
+    ON stg.CustomerID = mini.CustomerID AND mini.Active_Flag = 'Y';
+
+---------------------------------------------------------
+--   STEP 5: Final Output Check
+---------------------------------------------------------
+select * from SCDType5.Main_Customer_Dim
+select * from SCDType5.Mini_Customer_Dim
+select * from SCDType5.customer_stg
+
+
+-- Main Dimension (current customers with pointer to latest MiniDim)
+SELECT * FROM SCDType5.Main_Customer_Dim;
+
+-- Mini Dimension (full history of changes)
+SELECT * FROM SCDType5.Mini_Customer_Dim;
+
+-- Staging table (latest load)
+SELECT * FROM SCDType5.Customer_Stg;
