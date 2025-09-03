@@ -1,0 +1,75 @@
+-- Drop existing tables if any
+-- DROP TABLE SCDType4.Customer_Dim;
+-- DROP TABLE SCDType4.Customer_History;
+-- DROP TABLE SCDType4.Customer_Stg;
+
+-- Create Schema
+CREATE SCHEMA SCDType4;
+
+--   STEP 1: Create Current Dimension Table (Customer_Dim)
+--   - Always stores only the latest data
+CREATE TABLE SCDType4.Customer_Dim (
+    CustomerID INT PRIMARY KEY,      -- Business Key
+    CustomerName VARCHAR(100),       -- Customer Name
+    City VARCHAR(100)                -- Current City
+);
+
+-- Insert Initial Records into Dimension Table
+INSERT INTO SCDType4.Customer_Dim (CustomerID, CustomerName, City)
+VALUES
+    (1, 'Ramesh Kumar', 'Delhi'),
+    (2, 'Priya Sharma', 'Mumbai');
+
+--   STEP 2: Create History Table (Customer_History)
+--   - Stores older records when changes happen
+CREATE TABLE SCDType4.Customer_History (
+    HistoryID INT IDENTITY(1,1) PRIMARY KEY, -- Surrogate key for history tracking
+    CustomerID INT,                          -- Business Key
+    CustomerName VARCHAR(100),               -- Customer Name
+    City VARCHAR(100),                       -- Old City value
+    Change_Date DATE                         -- When the change happened
+);
+
+--   STEP 3: Create Staging Table (Customer_Stg)
+CREATE TABLE SCDType4.Customer_Stg (
+    CustomerID INT,                  -- Business Key
+    CustomerName VARCHAR(100),       -- Updated Customer Name
+    City VARCHAR(100)                -- Updated City
+);
+
+-- Insert Incoming Records into Staging Table
+-- First change: Ramesh → Bangalore
+-- Second change: Priya → Chennai
+INSERT INTO SCDType4.Customer_Stg (CustomerID, CustomerName, City)
+VALUES
+    (1, 'Ramesh Kumar', 'Bangalore'),  -- City changed from Delhi
+    (2, 'Priya Sharma', 'Chennai');    -- City changed from Mumbai
+
+--   STEP 4: Apply SCD Type 4 Logic
+--   - If data changes → move old record to history, update current table
+--   - If new record → insert into current table
+
+MERGE SCDType4.Customer_Dim AS Target
+USING SCDType4.Customer_Stg AS Source
+ON Target.CustomerID = Source.CustomerID
+WHEN MATCHED AND Target.City <> Source.City THEN
+    UPDATE SET Target.City = Source.City
+WHEN NOT MATCHED BY TARGET THEN
+    INSERT (CustomerID, CustomerName, City)
+    VALUES (Source.CustomerID, Source.CustomerName, Source.City)
+OUTPUT                      -- old value  --> deleted, new value --> inserted
+    deleted.CustomerID, 
+    deleted.CustomerName, 
+    deleted.City,
+    GETDATE()
+INTO SCDType4.Customer_History (CustomerID, CustomerName, City, Change_Date);
+
+--   STEP 5: Final Output Check
+SELECT * FROM SCDType4.Customer_Dim;      -- Current latest data
+SELECT * FROM SCDType4.Customer_History;  -- Full history
+SELECT * FROM SCDType4.Customer_Stg;      -- Incoming snapshot
+
+
+
+
+
