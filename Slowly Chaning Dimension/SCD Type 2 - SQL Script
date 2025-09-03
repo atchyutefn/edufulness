@@ -1,0 +1,69 @@
+-- Create schema SCDType2;
+
+-- Dimension Table (with history)
+CREATE TABLE SCDType2.Customer_Dim (
+    CustomerKey INT IDENTITY(1,1) PRIMARY KEY,  -- Surrogate Key
+    CustomerID INT,                             -- Business Key
+    CustomerName VARCHAR(100),
+    Gender CHAR(1),
+    City VARCHAR(100),
+    StartDate DATE,                             -- When this record became active
+    EndDate DATE,                               -- When this record expired
+    IsCurrent BIT                               -- Flag for active record (1=Current, 0=Expired)
+);
+
+-- Staging Table
+CREATE TABLE SCDType2.Customer_Stg (
+    CustomerID INT,
+    CustomerName VARCHAR(100),
+    Gender CHAR(1),
+    City VARCHAR(100)
+);
+
+/* insert them into Customer_Dim with 
+		StartDate = Today, 
+		EndDate = NULL, 
+		IsCurrent = 1:
+*/
+
+INSERT INTO SCDType2.Customer_Stg (CustomerID, CustomerName, Gender, City)
+VALUES
+    (1, 'Ravi Kumar', 'M', 'Hyderabad'),
+    (2, 'Anjali Sharma', 'F', 'Mumbai'),
+    (3, 'Suresh Reddy', 'M', 'Chennai');
+
+INSERT INTO SCDType2.Customer_Dim 
+(CustomerID, CustomerName, Gender, City, StartDate, EndDate, IsCurrent)
+SELECT CustomerID, CustomerName, Gender, City, GETDATE(), NULL, 1
+FROM SCDType2.Customer_Stg;
+
+-- truncate table SCDType2.Customer_Stg
+--New Data Comes (Some changes + New Record)
+INSERT INTO SCDType2.Customer_Stg (CustomerID, CustomerName, Gender, City)
+VALUES
+    (1, 'Ravi Kumar', 'M', 'Bangalore'),  -- City changed
+    (2, 'Anjali Sharma', 'F', 'Mumbai'),  -- No change
+    (3, 'Suresh Reddy', 'M', 'Chennai'),  -- No change
+    (4, 'Priya Singh', 'F', 'Delhi');     -- New record
+
+-- Logic to Implement SCD Type 2
+-- Step A: Update expired record
+	MERGE INTO SCDType2.Customer_Dim AS dim
+	USING SCDType2.Customer_Stg AS stg
+		ON dim.CustomerID = stg.CustomerID
+	   AND dim.IsCurrent = 1   -- only match against current record
+	WHEN MATCHED AND 
+		 (dim.CustomerName <> stg.CustomerName 
+		  OR dim.Gender <> stg.Gender 
+		  OR dim.City <> stg.City) 
+	THEN 
+		-- expire old record
+		UPDATE SET dim.EndDate = GETDATE(),
+				   dim.IsCurrent = 0;
+
+-- Step B: Insert new versions
+	INSERT INTO SCDType2.Customer_Dim
+	(CustomerID, CustomerName, Gender, City, StartDate, EndDate, IsCurrent)
+	SELECT stg.CustomerID, stg.CustomerName, stg.Gender, stg.City, GETDATE(), NULL, 1
+	FROM SCDType2.Customer_Stg stg
+
