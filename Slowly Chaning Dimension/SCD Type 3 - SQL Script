@@ -1,0 +1,74 @@
+-- Drop tables if exist
+-- DROP TABLE SCDType3.Customer_Dim;
+-- DROP TABLE SCDType3.Customer_Stg;
+
+-- Create Schema
+CREATE SCHEMA SCDType3;
+
+-- ============================================================
+--   STEP 1: Create Target Dimension Table (Customer_Dim)
+--   - In SCD Type 3, we keep both Current and Previous values
+-- ============================================================
+CREATE TABLE SCDType3.Customer_Dim (
+    CustomerID INT PRIMARY KEY,         -- Business Key
+    CustomerName VARCHAR(100),          -- Customer Name
+    Gender CHAR(1),                     -- Gender: M/F
+    CurrentCity VARCHAR(100),           -- Current City
+    PreviousCity VARCHAR(100) NULL      -- Previous City (1-level history)
+);
+
+-- Insert Initial Records into Target Dimension
+INSERT INTO SCDType3.Customer_Dim (CustomerID, CustomerName, Gender, CurrentCity, PreviousCity)
+VALUES 
+    (1, 'Ravi Kumar', 'M', 'Hyderabad', NULL),
+    (2, 'Anjali Sharma', 'F', 'Mumbai', NULL),
+    (3, 'Suresh Reddy', 'M', 'Chennai', NULL);
+
+-- ============================================================
+--   STEP 2: Create Staging Table (Customer_Stg)
+-- ============================================================
+CREATE TABLE SCDType3.Customer_Stg (
+    CustomerID INT,                     
+    CustomerName VARCHAR(100),          
+    Gender CHAR(1),                     
+    City VARCHAR(100)                   -- Incoming New City
+);
+
+-- Insert Incoming Records into Staging Table
+INSERT INTO SCDType3.Customer_Stg (CustomerID, CustomerName, Gender, City)
+VALUES
+    (1, 'Ravi Kumar', 'M', 'Bangalore'),     -- City changed (Hyderabad -> Bangalore)
+    (2, 'Anjali Sharma', 'F', 'Mumbai'),     -- No change
+    (3, 'Suresh Reddy', 'M', 'Chennai'),     -- No change
+    (4, 'Priya Singh', 'F', 'Delhi');        -- New record
+
+-- ============================================================
+--   STEP 3: Apply SCD Type 3 using MERGE
+--   - Update: Keep PreviousCity before updating CurrentCity
+--   - Insert: New records if not already present
+-- ============================================================
+MERGE SCDType3.Customer_Dim AS Target
+USING SCDType3.Customer_Stg AS Source
+ON Target.CustomerID = Source.CustomerID
+
+WHEN MATCHED AND Target.CurrentCity <> Source.City THEN
+    UPDATE SET
+        Target.CustomerName = Source.CustomerName,
+        Target.Gender = Source.Gender,
+        Target.PreviousCity = Target.CurrentCity,   -- move current to previous
+        Target.CurrentCity = Source.City            -- overwrite current with new
+
+WHEN MATCHED AND Target.CurrentCity = Source.City THEN
+    UPDATE SET
+        Target.CustomerName = Source.CustomerName,
+        Target.Gender = Source.Gender               -- Update only name/gender if changed
+
+WHEN NOT MATCHED BY TARGET THEN
+    INSERT (CustomerID, CustomerName, Gender, CurrentCity, PreviousCity)
+    VALUES (Source.CustomerID, Source.CustomerName, Source.Gender, Source.City, NULL);
+
+-- ============================================================
+--   STEP 4: Final Output Check
+-- ============================================================
+SELECT * FROM SCDType3.Customer_Dim;
+SELECT * FROM SCDType3.Customer_Stg;
